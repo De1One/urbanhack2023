@@ -1,0 +1,8 @@
+path: /usr/src/ultralytics/test_data  # dataset root dir
+train: images/  # train images (relative to 'path') 128 images
+val: images/  # val images (relative to 'path') 128 images
+
+names:
+    0: window
+    1: empty
+    2: filled
