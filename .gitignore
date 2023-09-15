@@ -1,1 +1,7 @@
 .idea
+__MACOSX
+
+private/images/*
+!private/images/.gitkeep
+private/labels/*
+!private/labels/.gitkeep

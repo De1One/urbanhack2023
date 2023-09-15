@@ -1,128 +1,1021 @@
+import argparse
+import glob
 import os
+import shutil
+import sys
+import sys
+import os
+from enum import Enum
+import cv2
+
+
+def add_path(path):
+    if path not in sys.path:
+        sys.path.insert(0, path)
+
+
+currentPath = os.path.dirname(os.path.realpath(__file__))
+
+# Add lib to PYTHONPATH
+libPath = os.path.join(currentPath, 'lib')
+add_path(libPath)
+
+
+class MethodAveragePrecision(Enum):
+    """
+    Class representing if the coordinates are relative to the
+    image size or are absolute values.
+
+        Developed by: Rafael Padilla
+        Last modification: Apr 28 2018
+    """
+    EveryPointInterpolation = 1
+    ElevenPointInterpolation = 2
+
+
+class CoordinatesType(Enum):
+    """
+    Class representing if the coordinates are relative to the
+    image size or are absolute values.
+
+        Developed by: Rafael Padilla
+        Last modification: Apr 28 2018
+    """
+    Relative = 1
+    Absolute = 2
+
+
+class BBType(Enum):
+    """
+    Class representing if the bounding box is groundtruth or not.
+
+        Developed by: Rafael Padilla
+        Last modification: May 24 2018
+    """
+    GroundTruth = 1
+    Detected = 2
+
+
+class BBFormat(Enum):
+    """
+    Class representing the format of a bounding box.
+    It can be (X,Y,width,height) => XYWH
+    or (X1,Y1,X2,Y2) => XYX2Y2
+
+        Developed by: Rafael Padilla
+        Last modification: May 24 2018
+    """
+    XYWH = 1
+    XYX2Y2 = 2
+
+
+# size => (width, height) of the image
+# box => (X1, X2, Y1, Y2) of the bounding box
+def convertToRelativeValues(size, box):
+    dw = 1. / (size[0])
+    dh = 1. / (size[1])
+    cx = (box[1] + box[0]) / 2.0
+    cy = (box[3] + box[2]) / 2.0
+    w = box[1] - box[0]
+    h = box[3] - box[2]
+    x = cx * dw
+    y = cy * dh
+    w = w * dw
+    h = h * dh
+    # x,y => (bounding_box_center)/width_of_the_image
+    # w => bounding_box_width / width_of_the_image
+    # h => bounding_box_height / height_of_the_image
+    return (x, y, w, h)
+
+
+# size => (width, height) of the image
+# box => (centerX, centerY, w, h) of the bounding box relative to the image
+def convertToAbsoluteValues(size, box):
+    # w_box = round(size[0] * box[2])
+    # h_box = round(size[1] * box[3])
+    xIn = round(((2 * float(box[0]) - float(box[2])) * size[0] / 2))
+    yIn = round(((2 * float(box[1]) - float(box[3])) * size[1] / 2))
+    xEnd = xIn + round(float(box[2]) * size[0])
+    yEnd = yIn + round(float(box[3]) * size[1])
+    if xIn < 0:
+        xIn = 0
+    if yIn < 0:
+        yIn = 0
+    if xEnd >= size[0]:
+        xEnd = size[0] - 1
+    if yEnd >= size[1]:
+        yEnd = size[1] - 1
+    return (xIn, yIn, xEnd, yEnd)
+
+
+def add_bb_into_image(image, bb, color=(255, 0, 0), thickness=2, label=None):
+    r = int(color[0])
+    g = int(color[1])
+    b = int(color[2])
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    fontScale = 0.5
+    fontThickness = 1
+
+    x1, y1, x2, y2 = bb.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+    x1 = int(x1)
+    y1 = int(y1)
+    x2 = int(x2)
+    y2 = int(y2)
+    cv2.rectangle(image, (x1, y1), (x2, y2), (b, g, r), thickness)
+    # Add label
+    if label is not None:
+        # Get size of the text box
+        (tw, th) = cv2.getTextSize(label, font, fontScale, fontThickness)[0]
+        # Top-left coord of the textbox
+        (xin_bb, yin_bb) = (x1 + thickness, y1 - th + int(12.5 * fontScale))
+        # Checking position of the text top-left (outside or inside the bb)
+        if yin_bb - th <= 0:  # if outside the image
+            yin_bb = y1 + th  # put it inside the bb
+        r_Xin = x1 - int(thickness / 2)
+        r_Yin = y1 - th - int(thickness / 2)
+        # Draw filled rectangle to put the text in it
+        cv2.rectangle(image, (r_Xin, r_Yin - thickness),
+                      (r_Xin + tw + thickness * 3, r_Yin + th + int(12.5 * fontScale)), (b, g, r),
+                      -1)
+        cv2.putText(image, label, (xin_bb, yin_bb), font, fontScale, (0, 0, 0), fontThickness,
+                    cv2.LINE_AA)
+    return image
+
+
+import os
+import sys
+from collections import Counter
+
 import numpy as np
-from pathlib import Path
-
-def center_to_corners(xc, yc, w, h):
-    """Convert center-width-height format to corner coordinates."""
-    x1 = xc - w/2
-    y1 = yc - h/2
-    x2 = xc + w/2
-    y2 = yc + h/2
-    return x1, y1, x2, y2
 
 
-def compute_iou(box1, box2):
-    """Compute the intersection over union of two set of boxes."""
-    x1c, y1c, w1, h1 = box1
-    x2c, y2c, w2, h2 = box2
+class Evaluator:
+    def GetPascalVOCMetrics(self,
+                            boundingboxes,
+                            IOUThreshold=0.5,
+                            method=MethodAveragePrecision.EveryPointInterpolation):
+        """Get the metrics used by the VOC Pascal 2012 challenge.
+        Get
+        Args:
+            boundingboxes: Object of the class BoundingBoxes representing ground truth and detected
+            bounding boxes;
+            IOUThreshold: IOU threshold indicating which detections will be considered TP or FP
+            (default value = 0.5);
+            method (default = EveryPointInterpolation): It can be calculated as the implementation
+            in the official PASCAL VOC toolkit (EveryPointInterpolation), or applying the 11-point
+            interpolatio as described in the paper "The PASCAL Visual Object Classes(VOC) Challenge"
+            or EveryPointInterpolation"  (ElevenPointInterpolation);
+        Returns:
+            A list of dictionaries. Each dictionary contains information and metrics of each class.
+            The keys of each dictionary are:
+            dict['class']: class representing the current dictionary;
+            dict['precision']: array with the precision values;
+            dict['recall']: array with the recall values;
+            dict['AP']: average precision;
+            dict['interpolated precision']: interpolated precision values;
+            dict['interpolated recall']: interpolated recall values;
+            dict['total positives']: total number of ground truth positives;
+            dict['total TP']: total number of True Positive detections;
+            dict['total FP']: total number of False Positive detections;
+        """
+        ret = []  # list containing metrics (precision, recall, average precision) of each class
+        # List with all ground truths (Ex: [imageName,class,confidence=1, (bb coordinates XYX2Y2)])
+        groundTruths = []
+        # List with all detections (Ex: [imageName,class,confidence,(bb coordinates XYX2Y2)])
+        detections = []
+        # Get all classes
+        classes = []
+        # Loop through all bounding boxes and separate them into GTs and detections
+        for bb in boundingboxes.getBoundingBoxes():
+            # [imageName, class, confidence, (bb coordinates XYX2Y2)]
+            if bb.getBBType() == BBType.GroundTruth:
+                groundTruths.append([
+                    bb.getImageName(),
+                    bb.getClassId(), 1,
+                    bb.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+                ])
+            else:
+                detections.append([
+                    bb.getImageName(),
+                    bb.getClassId(),
+                    bb.getConfidence(),
+                    bb.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+                ])
+            # get class
+            if bb.getClassId() not in classes:
+                classes.append(bb.getClassId())
+        classes = sorted(classes)
+        # Precision x Recall is obtained individually by each class
+        # Loop through by classes
+        for c in classes:
+            # Get only detection of class c
+            dects = []
+            [dects.append(d) for d in detections if d[1] == c]
+            # Get only ground truths of class c, use filename as key
+            gts = {}
+            npos = 0
+            for g in groundTruths:
+                if g[1] == c:
+                    npos += 1
+                    gts[g[0]] = gts.get(g[0], []) + [g]
 
-    x1, y1, x2, y2 = center_to_corners(x1c, y1c, w1, h1)
-    x1g, y1g, x2g, y2g = center_to_corners(x2c, y2c, w2, h2)
+            # sort detections by decreasing confidence
+            dects = sorted(dects, key=lambda conf: conf[2], reverse=True)
+            TP = np.zeros(len(dects))
+            FP = np.zeros(len(dects))
+            # create dictionary with amount of gts for each image
+            det = {key: np.zeros(len(gts[key])) for key in gts}
 
-    xi1 = max(x1, x1g)
-    yi1 = max(y1, y1g)
-    xi2 = min(x2, x2g)
-    yi2 = min(y2, y2g)
-    
-    inter_area = max(xi2 - xi1, 0) * max(yi2 - yi1, 0)
-    box1_area = (x2 - x1) * (y2 - y1)
-    box2_area = (x2g - x1g) * (y2g - y1g)
-    
-    union_area = box1_area + box2_area - inter_area
-    iou = inter_area / union_area
-    
-    return iou
+            # print("Evaluating class: %s (%d detections)" % (str(c), len(dects)))
+            # Loop through detections
+            for d in range(len(dects)):
+                # print('dect %s => %s' % (dects[d][0], dects[d][3],))
+                # Find ground truth image
+                gt = gts[dects[d][0]] if dects[d][0] in gts else []
+                iouMax = sys.float_info.min
+                for j in range(len(gt)):
+                    # print('Ground truth gt => %s' % (gt[j][3],))
+                    iou = Evaluator.iou(dects[d][3], gt[j][3])
+                    if iou > iouMax:
+                        iouMax = iou
+                        jmax = j
+                # Assign detection as true positive/don't care/false positive
+                if iouMax >= IOUThreshold:
+                    if det[dects[d][0]][jmax] == 0:
+                        TP[d] = 1  # count as true positive
+                        det[dects[d][0]][jmax] = 1  # flag as already 'seen'
+                        # print("TP")
+                    else:
+                        FP[d] = 1  # count as false positive
+                        # print("FP")
+                # - A detected "cat" is overlaped with a GT "cat" with IOU >= IOUThreshold.
+                else:
+                    FP[d] = 1  # count as false positive
+                    # print("FP")
+            # compute precision, recall and average precision
+            acc_FP = np.cumsum(FP)
+            acc_TP = np.cumsum(TP)
+            rec = acc_TP / npos
+            prec = np.divide(acc_TP, (acc_FP + acc_TP))
+            # Depending on the method, call the right implementation
+            if method == MethodAveragePrecision.EveryPointInterpolation:
+                [ap, mpre, mrec, ii] = Evaluator.CalculateAveragePrecision(rec, prec)
+            else:
+                [ap, mpre, mrec, _] = Evaluator.ElevenPointInterpolatedAP(rec, prec)
+            # add class result in the dictionary to be returned
+            r = {
+                'class': c,
+                'precision': prec,
+                'recall': rec,
+                'AP': ap,
+                'interpolated precision': mpre,
+                'interpolated recall': mrec,
+                'total positives': npos,
+                'total TP': np.sum(TP),
+                'total FP': np.sum(FP)
+            }
+            ret.append(r)
+        return ret
 
-def compute_ap(rec, prec):
-    """Compute average precision."""
-    mrec = [0.] + [e for e in rec] + [1.]
-    mpre = [0.] + [e for e in prec] + [0.]
-    for i in range(len(mpre) - 1, 0, -1):
-        mpre[i - 1] = max(mpre[i - 1], mpre[i])
-    idx = [i for i in range(len(mrec) - 1) if mrec[i] != mrec[i + 1]]
-    ap = sum([(mrec[i + 1] - mrec[i]) * mpre[i + 1] for i in idx])
-    return ap
+    def PlotPrecisionRecallCurve(self,
+                                 boundingBoxes,
+                                 IOUThreshold=0.5,
+                                 method=MethodAveragePrecision.EveryPointInterpolation,
+                                 showInterpolatedPrecision=False, ):
+        """PlotPrecisionRecallCurve
+        Plot the Precision x Recall curve for a given class.
+        Args:
+            boundingBoxes: Object of the class BoundingBoxes representing ground truth and detected
+            bounding boxes;
+            IOUThreshold (optional): IOU threshold indicating which detections will be considered
+            TP or FP (default value = 0.5);
+            method (default = EveryPointInterpolation): It can be calculated as the implementation
+            in the official PASCAL VOC toolkit (EveryPointInterpolation), or applying the 11-point
+            interpolatio as described in the paper "The PASCAL Visual Object Classes(VOC) Challenge"
+            or EveryPointInterpolation"  (ElevenPointInterpolation).
+            showAP (optional): if True, the average precision value will be shown in the title of
+            the graph (default = False);
+            showInterpolatedPrecision (optional): if True, it will show in the plot the interpolated
+             precision (default = False);
+            savePath (optional): if informed, the plot will be saved as an image in this path
+            (ex: /home/mywork/ap.png) (default = None);
+            showGraphic (optional): if True, the plot will be shown (default = True)
+        Returns:
+            A list of dictionaries. Each dictionary contains information and metrics of each class.
+            The keys of each dictionary are:
+            dict['class']: class representing the current dictionary;
+            dict['precision']: array with the precision values;
+            dict['recall']: array with the recall values;
+            dict['AP']: average precision;
+            dict['interpolated precision']: interpolated precision values;
+            dict['interpolated recall']: interpolated recall values;
+            dict['total positives']: total number of ground truth positives;
+            dict['total TP']: total number of True Positive detections;
+            dict['total FP']: total number of False Negative detections;
+        """
+        results = self.GetPascalVOCMetrics(boundingBoxes, IOUThreshold, method)
+        result = None
+        # Each resut represents a class
+        for result in results:
+            if result is None:
+                raise IOError('Error: Class %d could not be found.' % classId)
 
-def compute_map_50(ground_truth_dir, prediction_dir):
-    gt_dir = Path(ground_truth_dir)
-    pred_dir = Path(prediction_dir)
+            classId = result['class']
+            precision = result['precision']
+            recall = result['recall']
+            average_precision = result['AP']
+            mpre = result['interpolated precision']
+            mrec = result['interpolated recall']
+            npos = result['total positives']
+            total_tp = result['total TP']
+            total_fp = result['total FP']
 
-    all_files = list(gt_dir.glob("*.txt"))
-    
-    total_gt = {}
-    total_preds = {}
-    all_labels = set()
+            if showInterpolatedPrecision:
+                if method == MethodAveragePrecision.ElevenPointInterpolation:
+                    # Uncomment the line below if you want to plot the area
+                    # plt.plot(mrec, mpre, 'or', label='11-point interpolated precision')
+                    # Remove duplicates, getting only the highest precision of each recall value
+                    nrec = []
+                    nprec = []
+                    for idx in range(len(mrec)):
+                        r = mrec[idx]
+                        if r not in nrec:
+                            idxEq = np.argwhere(mrec == r)
+                            nrec.append(r)
+                            nprec.append(max([mpre[int(id)] for id in idxEq]))
+        return results
 
-    # Count total ground truths per label
-    for file in all_files:
-        with file.open('r') as f:
-            for line in f:
-                label, *bbox = line.strip().split()
-                all_labels.add(label)
-                total_gt[label] = total_gt.get(label, 0) + 1
+    @staticmethod
+    def CalculateAveragePrecision(rec, prec):
+        mrec = []
+        mrec.append(0)
+        [mrec.append(e) for e in rec]
+        mrec.append(1)
+        mpre = []
+        mpre.append(0)
+        [mpre.append(e) for e in prec]
+        mpre.append(0)
+        for i in range(len(mpre) - 1, 0, -1):
+            mpre[i - 1] = max(mpre[i - 1], mpre[i])
+        ii = []
+        for i in range(len(mrec) - 1):
+            if mrec[1 + i] != mrec[i]:
+                ii.append(i + 1)
+        ap = 0
+        for i in ii:
+            ap = ap + np.sum((mrec[i] - mrec[i - 1]) * mpre[i])
+        # return [ap, mpre[1:len(mpre)-1], mrec[1:len(mpre)-1], ii]
+        return [ap, mpre[0:len(mpre) - 1], mrec[0:len(mpre) - 1], ii]
 
-    # Initialize total predictions to zero
-    for label in all_labels:
-        total_preds[label] = 0
+    @staticmethod
+    # 11-point interpolated average precision
+    def ElevenPointInterpolatedAP(rec, prec):
+        # def CalculateAveragePrecision2(rec, prec):
+        mrec = []
+        # mrec.append(0)
+        [mrec.append(e) for e in rec]
+        # mrec.append(1)
+        mpre = []
+        # mpre.append(0)
+        [mpre.append(e) for e in prec]
+        # mpre.append(0)
+        recallValues = np.linspace(0, 1, 11)
+        recallValues = list(recallValues[::-1])
+        rhoInterp = []
+        recallValid = []
+        # For each recallValues (0, 0.1, 0.2, ... , 1)
+        for r in recallValues:
+            # Obtain all recall values higher or equal than r
+            argGreaterRecalls = np.argwhere(mrec[:] >= r)
+            pmax = 0
+            # If there are recalls above r
+            if argGreaterRecalls.size != 0:
+                pmax = max(mpre[argGreaterRecalls.min():])
+            recallValid.append(r)
+            rhoInterp.append(pmax)
+        # By definition AP = sum(max(precision whose recall is above r))/11
+        ap = sum(rhoInterp) / 11
+        # Generating values for the plot
+        rvals = []
+        rvals.append(recallValid[0])
+        [rvals.append(e) for e in recallValid]
+        rvals.append(0)
+        pvals = []
+        pvals.append(0)
+        [pvals.append(e) for e in rhoInterp]
+        pvals.append(0)
+        # rhoInterp = rhoInterp[::-1]
+        cc = []
+        for i in range(len(rvals)):
+            p = (rvals[i], pvals[i - 1])
+            if p not in cc:
+                cc.append(p)
+            p = (rvals[i], pvals[i])
+            if p not in cc:
+                cc.append(p)
+        recallValues = [i[0] for i in cc]
+        rhoInterp = [i[1] for i in cc]
+        return [ap, rhoInterp, recallValues, None]
 
-    scores = {label: [] for label in all_labels}
-    matched_detections = {label: 0 for label in all_labels}
+    # For each detections, calculate IOU with reference
+    @staticmethod
+    def _getAllIOUs(reference, detections):
+        ret = []
+        bbReference = reference.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+        # img = np.zeros((200,200,3), np.uint8)
+        for d in detections:
+            bb = d.getAbsoluteBoundingBox(BBFormat.XYX2Y2)
+            iou = Evaluator.iou(bbReference, bb)
+            # Show blank image with the bounding boxes
+            # img = add_bb_into_image(img, d, color=(255,0,0), thickness=2, label=None)
+            # img = add_bb_into_image(img, reference, color=(0,255,0), thickness=2, label=None)
+            ret.append((iou, reference, d))  # iou, reference, detection
+        # cv2.imshow("comparing",img)
+        # cv2.waitKey(0)
+        # cv2.destroyWindow("comparing")
+        return sorted(ret, key=lambda i: i[0], reverse=True)  # sort by iou (from highest to lowest)
 
-    # Match preds to ground truth
-    for file in all_files:
-        gt_bboxes = {}
-        pred_bboxes = {}
-        for label in all_labels:
-            gt_bboxes[label] = []
-            pred_bboxes[label] = []
+    @staticmethod
+    def iou(boxA, boxB):
+        # if boxes dont intersect
+        if Evaluator._boxesIntersect(boxA, boxB) is False:
+            return 0
+        interArea = Evaluator._getIntersectionArea(boxA, boxB)
+        union = Evaluator._getUnionAreas(boxA, boxB, interArea=interArea)
+        # intersection over union
+        iou = interArea / union
+        assert iou >= 0
+        return iou
 
-        # Load ground truth
-        with file.open('r') as f:
-            for line in f:
-                label, *bbox = line.strip().split()
-                bbox = [float(x) for x in bbox]
-                gt_bboxes[label].append(bbox)
+    # boxA = (Ax1,Ay1,Ax2,Ay2)
+    # boxB = (Bx1,By1,Bx2,By2)
+    @staticmethod
+    def _boxesIntersect(boxA, boxB):
+        if boxA[0] > boxB[2]:
+            return False  # boxA is right of boxB
+        if boxB[0] > boxA[2]:
+            return False  # boxA is left of boxB
+        if boxA[3] < boxB[1]:
+            return False  # boxA is above boxB
+        if boxA[1] > boxB[3]:
+            return False  # boxA is below boxB
+        return True
 
-        pred_file = pred_dir / file.name
-        if pred_file.exists():
-            with pred_file.open('r') as f:
-                for line in f:
-                    label, *bbox = line.strip().split()
-                    if label in all_labels:
-                        bbox = [float(x) for x in bbox]
-                        pred_bboxes[label].append(bbox)
-                        total_preds[label] += 1
+    @staticmethod
+    def _getIntersectionArea(boxA, boxB):
+        xA = max(boxA[0], boxB[0])
+        yA = max(boxA[1], boxB[1])
+        xB = min(boxA[2], boxB[2])
+        yB = min(boxA[3], boxB[3])
+        # intersection area
+        return (xB - xA + 1) * (yB - yA + 1)
 
-        for label in all_labels:
-            detected = []
-            for pred in pred_bboxes[label]:
-                # print(f"Pred Box: {pred}")  # Debugging line
-                best_iou = 0.5
-                best_gt_idx = -1
-                for idx, gt in enumerate(gt_bboxes[label]):
-                    # print(f"GT Box: {gt}")  # Debugging line
-                    if idx not in detected:
-                        iou = compute_iou(pred, gt)
-                        if iou > best_iou:
-                            best_iou = iou
-                            best_gt_idx = idx
+    @staticmethod
+    def _getUnionAreas(boxA, boxB, interArea=None):
+        area_A = Evaluator._getArea(boxA)
+        area_B = Evaluator._getArea(boxB)
+        if interArea is None:
+            interArea = Evaluator._getIntersectionArea(boxA, boxB)
+        return float(area_A + area_B - interArea)
 
-                if best_gt_idx >= 0:
-                    detected.append(best_gt_idx)
-                    matched_detections[label] += 1
-                scores[label].append((best_iou, 1 if best_gt_idx >= 0 else 0))
+    @staticmethod
+    def _getArea(box):
+        return (box[2] - box[0] + 1) * (box[3] - box[1] + 1)
 
-    mAP = 0
-    for label in all_labels:
-        scores[label].sort(key=lambda x: x[0], reverse=True)
-        tp_cumsum = np.cumsum([score[1] for score in scores[label]])
-        precisions = tp_cumsum / (1 + np.arange(len(scores[label])))
-        recalls = tp_cumsum / total_gt[label]
-        mAP += compute_ap(recalls, precisions)
-    
-    mAP /= len(all_labels)
-    return mAP
 
-ground_truth_dir = "./test_data/labels"
-prediction_dir = "./output/"
-print(compute_map_50(ground_truth_dir, prediction_dir))
+class BoundingBoxes:
+    def __init__(self):
+        self._boundingBoxes = []
+
+    def addBoundingBox(self, bb):
+        self._boundingBoxes.append(bb)
+
+    def removeBoundingBox(self, _boundingBox):
+        for d in self._boundingBoxes:
+            if BoundingBox.compare(d, _boundingBox):
+                del self._boundingBoxes[d]
+                return
+
+    def removeAllBoundingBoxes(self):
+        self._boundingBoxes = []
+
+    def getBoundingBoxes(self):
+        return self._boundingBoxes
+
+    def getBoundingBoxByClass(self, classId):
+        boundingBoxes = []
+        for d in self._boundingBoxes:
+            if d.getClassId() == classId:  # get only specified bounding box type
+                boundingBoxes.append(d)
+        return boundingBoxes
+
+    def getClasses(self):
+        classes = []
+        for d in self._boundingBoxes:
+            c = d.getClassId()
+            if c not in classes:
+                classes.append(c)
+        return classes
+
+    def getBoundingBoxesByType(self, bbType):
+        # get only specified bb type
+        return [d for d in self._boundingBoxes if d.getBBType() == bbType]
+
+    def getBoundingBoxesByImageName(self, imageName):
+        # get only specified bb type
+        return [d for d in self._boundingBoxes if d.getImageName() == imageName]
+
+    def count(self, bbType=None):
+        if bbType is None:  # Return all bounding boxes
+            return len(self._boundingBoxes)
+        count = 0
+        for d in self._boundingBoxes:
+            if d.getBBType() == bbType:  # get only specified bb type
+                count += 1
+        return count
+
+    def clone(self):
+        newBoundingBoxes = BoundingBoxes()
+        for d in self._boundingBoxes:
+            det = BoundingBox.clone(d)
+            newBoundingBoxes.addBoundingBox(det)
+        return newBoundingBoxes
+
+    def drawAllBoundingBoxes(self, image, imageName):
+        bbxes = self.getBoundingBoxesByImageName(imageName)
+        for bb in bbxes:
+            if bb.getBBType() == BBType.GroundTruth:  # if ground truth
+                image = add_bb_into_image(image, bb, color=(0, 255, 0))  # green
+            else:  # if detection
+                image = add_bb_into_image(image, bb, color=(255, 0, 0))  # red
+        return image
+
+
+class BoundingBox:
+    def __init__(self,
+                 imageName,
+                 classId,
+                 x,
+                 y,
+                 w,
+                 h,
+                 typeCoordinates=CoordinatesType.Absolute,
+                 imgSize=None,
+                 bbType=BBType.GroundTruth,
+                 classConfidence=None,
+                 format=BBFormat.XYWH):
+        """Constructor.
+        Args:
+            imageName: String representing the image name.
+            classId: String value representing class id.
+            x: Float value representing the X upper-left coordinate of the bounding box.
+            y: Float value representing the Y upper-left coordinate of the bounding box.
+            w: Float value representing the width bounding box.
+            h: Float value representing the height bounding box.
+            typeCoordinates: (optional) Enum (Relative or Absolute) represents if the bounding box
+            coordinates (x,y,w,h) are absolute or relative to size of the image. Default:'Absolute'.
+            imgSize: (optional) 2D vector (width, height)=>(int, int) represents the size of the
+            image of the bounding box. If typeCoordinates is 'Relative', imgSize is required.
+            bbType: (optional) Enum (Groundtruth or Detection) identifies if the bounding box
+            represents a ground truth or a detection. If it is a detection, the classConfidence has
+            to be informed.
+            classConfidence: (optional) Float value representing the confidence of the detected
+            class. If detectionType is Detection, classConfidence needs to be informed.
+            format: (optional) Enum (BBFormat.XYWH or BBFormat.XYX2Y2) indicating the format of the
+            coordinates of the bounding boxes. BBFormat.XYWH: <left> <top> <width> <height>
+            BBFormat.XYX2Y2: <left> <top> <right> <bottom>.
+        """
+        self._imageName = imageName
+        self._typeCoordinates = typeCoordinates
+        if typeCoordinates == CoordinatesType.Relative and imgSize is None:
+            raise IOError(
+                'Parameter \'imgSize\' is required. It is necessary to inform the image size.')
+        if bbType == BBType.Detected and classConfidence is None:
+            raise IOError(
+                'For bbType=\'Detection\', it is necessary to inform the classConfidence value.')
+        # if classConfidence != None and (classConfidence < 0 or classConfidence > 1):
+        # raise IOError('classConfidence value must be a real value between 0 and 1. Value: %f' %
+        # classConfidence)
+
+        self._classConfidence = classConfidence
+        self._bbType = bbType
+        self._classId = classId
+        self._format = format
+
+        # If relative coordinates, convert to absolute values
+        # For relative coords: (x,y,w,h)=(X_center/img_width , Y_center/img_height)
+        if (typeCoordinates == CoordinatesType.Relative):
+            (self._x, self._y, self._w, self._h) = convertToAbsoluteValues(imgSize, (x, y, w, h))
+            self._width_img = imgSize[0]
+            self._height_img = imgSize[1]
+            if format == BBFormat.XYWH:
+                self._x2 = self._w
+                self._y2 = self._h
+                self._w = self._x2 - self._x
+                self._h = self._y2 - self._y
+            else:
+                raise IOError(
+                    'For relative coordinates, the format must be XYWH (x,y,width,height)')
+        # For absolute coords: (x,y,w,h)=real bb coords
+        else:
+            self._x = x
+            self._y = y
+            if format == BBFormat.XYWH:
+                self._w = w
+                self._h = h
+                self._x2 = self._x + self._w
+                self._y2 = self._y + self._h
+            else:  # format == BBFormat.XYX2Y2: <left> <top> <right> <bottom>.
+                self._x2 = w
+                self._y2 = h
+                self._w = self._x2 - self._x
+                self._h = self._y2 - self._y
+        if imgSize is None:
+            self._width_img = None
+            self._height_img = None
+        else:
+            self._width_img = imgSize[0]
+            self._height_img = imgSize[1]
+
+    def getAbsoluteBoundingBox(self, format=BBFormat.XYWH):
+        if format == BBFormat.XYWH:
+            return (self._x, self._y, self._w, self._h)
+        elif format == BBFormat.XYX2Y2:
+            return (self._x, self._y, self._x2, self._y2)
+
+    def getRelativeBoundingBox(self, imgSize=None):
+        if imgSize is None and self._width_img is None and self._height_img is None:
+            raise IOError(
+                'Parameter \'imgSize\' is required. It is necessary to inform the image size.')
+        if imgSize is not None:
+            return convertToRelativeValues((imgSize[0], imgSize[1]),
+                                           (self._x, self._x2, self._y, self._y2))
+        else:
+            return convertToRelativeValues((self._width_img, self._height_img),
+                                           (self._x, self._x2, self._y, self._y2))
+
+    def getImageName(self):
+        return self._imageName
+
+    def getConfidence(self):
+        return self._classConfidence
+
+    def getFormat(self):
+        return self._format
+
+    def getClassId(self):
+        return self._classId
+
+    def getImageSize(self):
+        return (self._width_img, self._height_img)
+
+    def getCoordinatesType(self):
+        return self._typeCoordinates
+
+    def getBBType(self):
+        return self._bbType
+
+    @staticmethod
+    def compare(det1, det2):
+        det1BB = det1.getAbsoluteBoundingBox()
+        det1ImgSize = det1.getImageSize()
+        det2BB = det2.getAbsoluteBoundingBox()
+        det2ImgSize = det2.getImageSize()
+
+        if det1.getClassId() == det2.getClassId() and \
+                det1.classConfidence == det2.classConfidenc() and \
+                det1BB[0] == det2BB[0] and \
+                det1BB[1] == det2BB[1] and \
+                det1BB[2] == det2BB[2] and \
+                det1BB[3] == det2BB[3] and \
+                det1ImgSize[0] == det2ImgSize[0] and \
+                det1ImgSize[1] == det2ImgSize[1]:
+            return True
+        return False
+
+    @staticmethod
+    def clone(boundingBox):
+        absBB = boundingBox.getAbsoluteBoundingBox(format=BBFormat.XYWH)
+        # return (self._x,self._y,self._x2,self._y2)
+        newBoundingBox = BoundingBox(boundingBox.getImageName(),
+                                     boundingBox.getClassId(),
+                                     absBB[0],
+                                     absBB[1],
+                                     absBB[2],
+                                     absBB[3],
+                                     typeCoordinates=boundingBox.getCoordinatesType(),
+                                     imgSize=boundingBox.getImageSize(),
+                                     bbType=boundingBox.getBBType(),
+                                     classConfidence=boundingBox.getConfidence(),
+                                     format=BBFormat.XYWH)
+        return newBoundingBox
+
+
+# Validate formats
+def ValidateFormats(argFormat, argName, errors):
+    if argFormat == 'xywh':
+        return BBFormat.XYWH
+    elif argFormat == 'xyrb':
+        return BBFormat.XYX2Y2
+    elif argFormat is None:
+        return BBFormat.XYWH  # default when nothing is passed
+    else:
+        errors.append('argument %s: invalid value. It must be either \'xywh\' or \'xyrb\'' %
+                      argName)
+
+
+# Validate mandatory args
+def ValidateMandatoryArgs(arg, argName, errors):
+    if arg is None:
+        errors.append('argument %s: required argument' % argName)
+    else:
+        return True
+
+
+def ValidateImageSize(arg, argName, argInformed, errors):
+    errorMsg = 'argument %s: required argument if %s is relative' % (argName, argInformed)
+    ret = None
+    if arg is None:
+        errors.append(errorMsg)
+    else:
+        arg = arg.replace('(', '').replace(')', '')
+        args = arg.split(',')
+        if len(args) != 2:
+            errors.append('%s. It must be in the format \'width,height\' (e.g. \'600,400\')' %
+                          errorMsg)
+        else:
+            if not args[0].isdigit() or not args[1].isdigit():
+                errors.append(
+                    '%s. It must be in INdiaTEGER the format \'width,height\' (e.g. \'600,400\')' %
+                    errorMsg)
+            else:
+                ret = (int(args[0]), int(args[1]))
+    return ret
+
+
+# Validate coordinate types
+def ValidateCoordinatesTypes(arg, argName, errors):
+    if arg == 'abs':
+        return CoordinatesType.Absolute
+    elif arg == 'rel':
+        return CoordinatesType.Relative
+    elif arg is None:
+        return CoordinatesType.Absolute  # default when nothing is passed
+    errors.append('argument %s: invalid value. It must be either \'rel\' or \'abs\'' % argName)
+
+
+def ValidatePaths(arg, nameArg, errors):
+    if arg is None:
+        errors.append('argument %s: invalid directory' % nameArg)
+    elif os.path.isdir(arg) is False and os.path.isdir(os.path.join(currentPath, arg)) is False:
+        errors.append('argument %s: directory does not exist \'%s\'' % (nameArg, arg))
+    # elif os.path.isdir(os.path.join(currentPath, arg)) is True:
+    #     arg = os.path.join(currentPath, arg)
+    else:
+        arg = os.path.join(currentPath, arg)
+    return arg
+
+
+def getBoundingBoxes(directory,
+                     isGT,
+                     bbFormat,
+                     coordType,
+                     allBoundingBoxes=None,
+                     allClasses=None,
+                     imgSize=(0, 0)):
+    """Read txt files containing bounding boxes (ground truth and detections)."""
+    if allBoundingBoxes is None:
+        allBoundingBoxes = BoundingBoxes()
+    if allClasses is None:
+        allClasses = []
+    # Read ground truths
+    os.chdir(directory)
+    files = glob.glob("*.txt")
+    files.sort()
+    # Read GT detections from txt file
+    # Each line of the files in the groundtruths folder represents a ground truth bounding box
+    # (bounding boxes that a detector should detect)
+    # Each value of each line is  "class_id, x, y, width, height" respectively
+    # Class_id represents the class of the bounding box
+    # x, y represents the most top-left coordinates of the bounding box
+    # x2, y2 represents the most bottom-right coordinates of the bounding box
+    for f in files:
+        nameOfImage = f.replace(".txt", "")
+        fh1 = open(f, "r")
+        for line in fh1:
+            line = line.replace("\n", "")
+            if line.replace(' ', '') == '':
+                continue
+            splitLine = line.split(" ")
+            if isGT:
+                # idClass = int(splitLine[0]) #class
+                idClass = (splitLine[0])  # class
+                x = float(splitLine[1])
+                y = float(splitLine[2])
+                w = float(splitLine[3])
+                h = float(splitLine[4])
+                bb = BoundingBox(nameOfImage,
+                                 idClass,
+                                 x,
+                                 y,
+                                 w,
+                                 h,
+                                 coordType,
+                                 imgSize,
+                                 BBType.GroundTruth,
+                                 format=bbFormat)
+            else:
+                # idClass = int(splitLine[0]) #class
+                idClass = (splitLine[0])  # class
+                confidence = float(splitLine[1])
+                x = float(splitLine[2])
+                y = float(splitLine[3])
+                w = float(splitLine[4])
+                h = float(splitLine[5])
+                bb = BoundingBox(nameOfImage,
+                                 idClass,
+                                 x,
+                                 y,
+                                 w,
+                                 h,
+                                 coordType,
+                                 imgSize,
+                                 BBType.Detected,
+                                 confidence,
+                                 format=bbFormat)
+            allBoundingBoxes.addBoundingBox(bb)
+            if idClass not in allClasses:
+                allClasses.append(idClass)
+        fh1.close()
+    return allBoundingBoxes, allClasses
+
+
+# Get current path to set default folders
+currentPath = os.path.dirname(os.path.abspath(__file__))
+
+VERSION = '0.2 (beta)'
+
+# print(message)
+
+parser = argparse.ArgumentParser(
+    prog='Object Detection Metrics - Pascal VOC', )
+parser.add_argument('-v', '--version', action='version', version='%(prog)s ' + VERSION)
+# Positional arguments
+# Mandatory
+parser.add_argument('-gt',
+                    '--gtfolder',
+                    dest='gtFolder',
+                    default='./private/labels',
+                    metavar='',
+                    help='folder containing your ground truth bounding boxes')
+parser.add_argument('-det',
+                    '--detfolder',
+                    dest='detFolder',
+                    default='./output',
+                    metavar='',
+                    help='folder containing your detected bounding boxes')
+# Optional
+parser.add_argument('-t',
+                    '--threshold',
+                    dest='iouThreshold',
+                    type=float,
+                    default=0.5,
+                    metavar='',
+                    help='IOU threshold. Default 0.5')
+parser.add_argument('-gtformat',
+                    dest='gtFormat',
+                    metavar='',
+                    default='xyrb',
+                    help='format of the coordinates of the ground truth bounding boxes: '
+                         '(\'xywh\': <left> <top> <width> <height>)'
+                         ' or (\'xyrb\': <left> <top> <right> <bottom>)')
+parser.add_argument('-detformat',
+                    dest='detFormat',
+                    metavar='',
+                    default='xyrb',
+                    help='format of the coordinates of the detected bounding boxes '
+                         '(\'xywh\': <left> <top> <width> <height>) '
+                         'or (\'xyrb\': <left> <top> <right> <bottom>)')
+parser.add_argument('-gtcoords',
+                    dest='gtCoordinates',
+                    default='abs',
+                    metavar='',
+                    help='reference of the ground truth bounding box coordinates: absolute '
+                         'values (\'abs\') or relative to its image size (\'rel\')')
+parser.add_argument('-detcoords',
+                    default='abs',
+                    dest='detCoordinates',
+                    metavar='',
+                    help='reference of the ground truth bounding box coordinates: '
+                         'absolute values (\'abs\') or relative to its image size (\'rel\')')
+parser.add_argument('-imgsize',
+                    dest='imgSize',
+                    metavar='',
+                    help='image size. Required if -gtcoords or -detcoords are \'rel\'')
+parser.add_argument('-sp',
+                    '--savepath',
+                    dest='savePath',
+                    metavar='',
+                    help='folder where the plots are saved')
+parser.add_argument('-np',
+                    '--noplot',
+                    dest='showPlot',
+                    action='store_false',
+                    help='no plot is shown during execution')
+args = parser.parse_args()
+
+iouThreshold = args.iouThreshold
+
+# Arguments validation
+errors = []
+# Validate formats
+gtFormat = ValidateFormats(args.gtFormat, '-gtformat', errors)
+detFormat = ValidateFormats(args.detFormat, '-detformat', errors)
+# Groundtruth folder
+if ValidateMandatoryArgs(args.gtFolder, '-gt/--gtfolder', errors):
+    gtFolder = ValidatePaths(args.gtFolder, '-gt/--gtfolder', errors)
+else:
+    # errors.pop()
+    gtFolder = os.path.join(currentPath, 'groundtruths')
+    if os.path.isdir(gtFolder) is False:
+        errors.append('folder %s not found' % gtFolder)
+# Coordinates types
+gtCoordType = ValidateCoordinatesTypes(args.gtCoordinates, '-gtCoordinates', errors)
+detCoordType = ValidateCoordinatesTypes(args.detCoordinates, '-detCoordinates', errors)
+imgSize = (0, 0)
+if gtCoordType == CoordinatesType.Relative:  # Image size is required
+    imgSize = ValidateImageSize(args.imgSize, '-imgsize', '-gtCoordinates', errors)
+if detCoordType == CoordinatesType.Relative:  # Image size is required
+    imgSize = ValidateImageSize(args.imgSize, '-imgsize', '-detCoordinates', errors)
+# Detection folder
+if ValidateMandatoryArgs(args.detFolder, '-det/--detfolder', errors):
+    detFolder = ValidatePaths(args.detFolder, '-det/--detfolder', errors)
+else:
+    # errors.pop()
+    detFolder = os.path.join(currentPath, 'detections')
+    if os.path.isdir(detFolder) is False:
+        errors.append('folder %s not found' % detFolder)
+# Validate savePath
+# If error, show error messages
+if len(errors) != 0:
+    # print("""usage: Object Detection Metrics [-h] [-v] [-gt] [-det] [-t] [-gtformat]
+    #                             [-detformat] [-save]""")
+    # print('Object Detection Metrics: error(s): ')
+    # [print(e) for e in errors]
+    sys.exit()
+
+# Clear folder and save results
+# Show plot during execution
+showPlot = args.showPlot
+
+# Get groundtruth boxes
+allBoundingBoxes, allClasses = getBoundingBoxes(gtFolder,
+                                                True,
+                                                gtFormat,
+                                                gtCoordType,
+                                                imgSize=imgSize)
+# Get detected boxes
+allBoundingBoxes, allClasses = getBoundingBoxes(detFolder,
+                                                False,
+                                                detFormat,
+                                                detCoordType,
+                                                allBoundingBoxes,
+                                                allClasses,
+                                                imgSize=imgSize)
+allClasses.sort()
+
+evaluator = Evaluator()
+acc_AP = 0
+validClasses = 0
+
+# Plot Precision x Recall curve
+detections = evaluator.PlotPrecisionRecallCurve(
+    allBoundingBoxes,  # Object containing all bounding boxes (ground truths and detections)
+    IOUThreshold=iouThreshold,  # IOU threshold
+    method=MethodAveragePrecision.EveryPointInterpolation,
+    showInterpolatedPrecision=False,  # Don't plot the interpolated precision curve)
+)
+
+# each detection is a class
+for metricsPerClass in detections:
+
+    # Get metric values per each class
+    cl = metricsPerClass['class']
+    ap = metricsPerClass['AP']
+    precision = metricsPerClass['precision']
+    recall = metricsPerClass['recall']
+    totalPositives = metricsPerClass['total positives']
+    total_TP = metricsPerClass['total TP']
+    total_FP = metricsPerClass['total FP']
+
+    if totalPositives > 0:
+        validClasses = validClasses + 1
+        acc_AP = acc_AP + ap
+        prec = ['%.2f' % p for p in precision]
+        rec = ['%.2f' % r for r in recall]
+        ap_str = "{0:.2f}%".format(ap * 100)
+
+mAP = acc_AP / validClasses
+mAP_str = "{0:.10f}".format(mAP)
+print('%s' % mAP_str)

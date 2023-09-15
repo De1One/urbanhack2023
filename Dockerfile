@@ -1,67 +1,33 @@
-# Ultralytics YOLO 🚀, AGPL-3.0 license
-# Builds ultralytics/ultralytics:latest-cpu image on DockerHub https://hub.docker.com/r/ultralytics/ultralytics
-# Image is CPU-optimized for ONNX, OpenVINO and PyTorch YOLOv8 deployments
+FROM ubuntu:22.04
 
-# Start FROM Ubuntu image https://hub.docker.com/_/ubuntu
-FROM ubuntu:lunar-20230615
-
-# Downloads to user config dir
-ADD https://ultralytics.com/assets/Arial.ttf https://ultralytics.com/assets/Arial.Unicode.ttf /root/.config/Ultralytics/
-
-# Install linux packages
-# g++ required to build 'tflite_support' and 'lap' packages, libusb-1.0-0 required for 'tflite_support' package
-RUN apt update \
-    && apt install --no-install-recommends -y python3-pip git zip curl htop libgl1-mesa-glx libglib2.0-0 libpython3-dev gnupg g++ libusb-1.0-0
-# RUN alias python=python3
-
-# Create working directory
-WORKDIR /usr/src/ultralytics
-
-# Copy contents
-# COPY . /usr/src/app  (issues as not a .git directory)
-RUN git clone https://github.com/ultralytics/ultralytics /usr/src/ultralytics
-ADD https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt /usr/src/ultralytics/
-
-# Remove python3.11/EXTERNALLY-MANAGED or use 'pip install --break-system-packages' avoid 'externally-managed-environment' Ubuntu nightly error
-RUN rm -rf /usr/lib/python3.11/EXTERNALLY-MANAGED
-
-# Install pip packages
-RUN python3 -m pip install --upgrade pip wheel
-#RUN pip install -r requirements.txt
-RUN pip install --no-cache -e ".[export]" thop --extra-index-url https://download.pytorch.org/whl/cpu
-
-# Run exports to AutoInstall packages
-RUN yolo export model=tmp/yolov8n.pt format=edgetpu imgsz=32
-RUN yolo export model=tmp/yolov8n.pt format=ncnn imgsz=32
-# Requires <= Python 3.10, bug with paddlepaddle==2.5.0
-# RUN pip install --no-cache paddlepaddle==2.4.2 x2paddle
-# Remove exported models
-RUN rm -rf tmp
-
-# Usage Examples -------------------------------------------------------------------------------------------------------
-
-# Build and Push
-# t=ultralytics/ultralytics:latest-cpu && sudo docker build -f docker/Dockerfile-cpu -t $t . && sudo docker push $t
-
-# Run
-# t=ultralytics/ultralytics:latest-cpu && sudo docker run -it --ipc=host $t
-
-# Pull and Run with local volume mounted
-# t=ultralytics/ultralytics:latest-cpu && sudo docker pull $t && sudo docker run -it --ipc=host -v "$(pwd)"/datasets:/usr/src/datasets $t
-
-
+WORKDIR /solution
 COPY . .
 
-# model weights
-RUN mkdir -p weights
-COPY weights/yolov5nu.pt ./weights
+# dependencies
+ENV DEBIAN_FRONTEND noninteractive
+RUN apt-get update && apt-get upgrade -y
 
-# output folder
+RUN apt-get install -y \
+        build-essential git python3 python3-pip wget \
+        ffmpeg libsm6 libxext6 libxrender1 libglib2.0-0
+
+RUN pip3 install -U pip
+RUN pip3 install --upgrade pip
+RUN pip3 install -r requirements.txt
+RUN mim install mmcv==2.0.0 # can be deleted
+
+# model weights
+RUN mkdir -p ./weights
+COPY weights/faster-rcnn-best.pth ./weights
+
+# input and output folders
+RUN mkdir -p ./private/images
+RUN mkdir -p ./private/labels
 RUN mkdir -p ./output
 
-RUN apt install --no-install-recommends -y vim
-
-# Generate preds
-# RUN yolo detect predict model=weights/yolov5nu.pt source=images device=cpu project=output name=preds save_txt=True save_conf=True
+# !!!! ONLY FOR THE TEST RUN - DELETE BEFORE SUBMITTING --->>>
+# COPY images ./private/images
+# COPY labels ./private/labels
+# <<<---
 
 CMD /bin/sh -c "python3 solution.py && python3 scorer.py"
