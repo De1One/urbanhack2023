@@ -47,10 +47,10 @@ To overcome such difficulties, we develop **Data Set Description Language (DSDL)
 
   |  Datasets  |                                                                                         Model                                                                                          | box AP |           Config            |
   | :--------: | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------: | :----: | :-------------------------: |
-  |  VOC07+12  |             [model](https://download.openmmlab.com/mmdetection/v2.0/pascal_voc/faster_rcnn_r50_fpn_1x_voc0712/faster_rcnn_r50_fpn_1x_voc0712_20220320_192712-54bef0f3.pth)             | 80.3\* |   [config](./voc0712.py)    |
-  |    COCO    |                   [model](https://download.openmmlab.com/mmdetection/v2.0/faster_rcnn/faster_rcnn_r50_fpn_1x_coco/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth)                   |  37.4  |     [config](./coco.py)     |
-  | Objects365 |       [model](https://download.openmmlab.com/mmdetection/v2.0/objects365/faster_rcnn_r50_fpn_16x4_1x_obj365v2/faster_rcnn_r50_fpn_16x4_1x_obj365v2_20221220_175040-5910b015.pth)       |  19.8  | [config](./objects365v2.py) |
-  | OpenImages | [model](https://download.openmmlab.com/mmdetection/v2.0/openimages/faster_rcnn_r50_fpn_32x2_cas_1x_openimages/faster_rcnn_r50_fpn_32x2_cas_1x_openimages_20220306_202424-98c630e5.pth) | 59.9\* | [config](./openimagesv6.py) |
+  |  VOC07+12  |             [model](https://download.openmmlab.com/mmdetection/v2.0/pascal_voc/faster_rcnn_r50_fpn_1x_voc0712/faster_rcnn_r50_fpn_1x_voc0712_20220320_192712-54bef0f3.pth)             | 80.3\* |   [config](voc0712.py)    |
+  |    COCO    |                   [model](https://download.openmmlab.com/mmdetection/v2.0/faster_rcnn/faster_rcnn_r50_fpn_1x_coco/faster_rcnn_r50_fpn_1x_coco_20200130-047c8118.pth)                   |  37.4  |     [config](coco.py)     |
+  | Objects365 |       [model](https://download.openmmlab.com/mmdetection/v2.0/objects365/faster_rcnn_r50_fpn_16x4_1x_obj365v2/faster_rcnn_r50_fpn_16x4_1x_obj365v2_20221220_175040-5910b015.pth)       |  19.8  | [config](objects365v2.py) |
+  | OpenImages | [model](https://download.openmmlab.com/mmdetection/v2.0/openimages/faster_rcnn_r50_fpn_32x2_cas_1x_openimages/faster_rcnn_r50_fpn_32x2_cas_1x_openimages_20220306_202424-98c630e5.pth) | 59.9\* | [config](openimagesv6.py) |
 
   \*: box AP in voc metric and openimages metric, actually means AP_50.
 
@@ -58,4 +58,4 @@ To overcome such difficulties, we develop **Data Set Description Language (DSDL)
 
   | Datasets |                                                                    Model                                                                     | box AP | mask AP |            Config            |
   | :------: | :------------------------------------------------------------------------------------------------------------------------------------------: | :----: | :-----: | :--------------------------: |
-  |   COCO   | [model](https://download.openmmlab.com/mmdetection/v2.0/mask_rcnn/mask_rcnn_r50_fpn_1x_coco/mask_rcnn_r50_fpn_1x_coco_20200205-d4b0c5d6.pth) |  38.1  |  34.7   | [config](./coco_instance.py) |
+  |   COCO   | [model](https://download.openmmlab.com/mmdetection/v2.0/mask_rcnn/mask_rcnn_r50_fpn_1x_coco/mask_rcnn_r50_fpn_1x_coco_20200205-d4b0c5d6.pth) |  38.1  |  34.7   | [config](coco_instance.py) |

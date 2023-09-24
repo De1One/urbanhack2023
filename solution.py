@@ -7,8 +7,8 @@ from PIL import Image
 from models import MMDetModel
 
 model = MMDetModel(
-    weights_path='./weights/faster-rcnn-best.pth',
-    cfg_path='./configs/faster_rcnn/faster-rcnn_r50_fpn_1x_coco.py'
+    weights_path='weights/model_final.pth',
+    cfg_path='configs/test.yml'
 )
 
 
@@ -19,13 +19,14 @@ def _glob_images(folder: Path, exts: List[str] = ('*.jpg', '*.png',)) -> List[Pa
     return images
 
 
-def format_predictions(labels, scores, bboxes) -> str:
+def format_predictions(results) -> str:
     formatted = []
 
-    for label, score, bbox in zip(labels, scores, bboxes):
-        label = int(label)
-        score = round(float(score), 4)
-        xmin, ymin, xmax, ymax = map(int, bbox)
+    for res in results:
+        label = res['category_id']
+        score = round(float(res['score']), 4)
+        xmin, ymin, xmax, ymax = \
+            int(res['bbox'][0]), int(res['bbox'][1]), int(res['bbox'][0]+res['bbox'][2]),int(res['bbox'][1]+res['bbox'][3])
 
         line = f"{label} {score} {xmin} {ymin} {xmax} {ymax}"
         formatted.append(line)
@@ -46,8 +47,8 @@ def predict_folder(input_folder: str, output_folder: str) -> None:
     for img_path in images_path:
 
         img = np.asarray(Image.open(img_path))
-        bboxes, labels, scores = model.predict(img)
-        predictions_repr = format_predictions(labels, scores, bboxes)
+        results = model.predict(img)
+        predictions_repr = format_predictions(results)
         output_path = output_folder / img_path.with_suffix('.txt').name
 
         write_predictions(predictions_repr, output_path)

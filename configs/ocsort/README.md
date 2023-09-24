@@ -45,12 +45,12 @@ Tracking Dataset Prepare can refer to this [document](../../docs/en/user_guides/
 
 ### 3. Training
 
-OCSORT training is same as Bytetrack, please refer to [document](../../configs/bytetrack/README.md).
+OCSORT training is same as Bytetrack, please refer to [document](..README.md).
 
 ### 4. Testing and evaluation
 
-OCSORT evaluation and test are same as Bytetrack, please refer to [document](../../configs/bytetrack/README.md).
+OCSORT evaluation and test are same as Bytetrack, please refer to [document](..README.md).
 
 ### 5.Inference
 
-OCSORT inference is same as Bytetrack, please refer to [document](../../configs/bytetrack/README.md).
+OCSORT inference is same as Bytetrack, please refer to [document](..README.md).
