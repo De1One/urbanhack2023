@@ -10,5 +10,6 @@ mmdet==3.1.0
 openmim
 sahi
 opencv-python
+pyyaml==5.1
 
 --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
